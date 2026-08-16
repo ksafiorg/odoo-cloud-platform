@@ -13,26 +13,50 @@ Activate Azure Blob storage:
 * Create or set the system parameter with the key ``ir_attachment.location``
   and the value in the form ``azure``.
 
-Configure accesses with environment variables:
+Configure accesses in the Odoo configuration file, in a section named after the
+``ODOO_STAGE`` environment variable (this fork reads the configuration file
+instead of environment variables, like ``attachment_s3`` does, because the
+hosting platform does not allow setting arbitrary environment variables)::
 
-* ``AZURE_STORAGE_CONNECTION_STRING`` or
-* ``AZURE_STORAGE_ACCOUNT_NAME``
-* ``AZURE_STORAGE_ACCOUNT_URL``
-* ``AZURE_STORAGE_ACCOUNT_KEY``
+    [production_storage_azure]
+    azure_storage_connection_string = DefaultEndpointsProtocol=https;AccountName=...
+    azure_storage_container = ksafi-odoo-production
 
-One container will be created per database using the `RUNNING_ENV` environment variable
-and the name of the database. By default, `RUNNING_ENV` is set to `dev`.
+Instead of a connection string, the account can be described with:
 
-The container name can be overridden with environment variable ``AZURE_STORAGE_NAME``.
-The strings ``{db}`` and ``{env}`` can be used inside that variable and the values
-will be replaced respectively by the database name and environment name.
+* ``azure_storage_account_name``
+* ``azure_storage_account_url``
+* ``azure_storage_account_key``
 
-The container name will also be stored in the database for each attachment,
-and will be used to access the right container in the storage.
+or, when a managed identity is available (not the case on Odoo.sh):
+
+* ``azure_storage_use_aad``
+* ``azure_storage_account_url``
+
+``azure_storage_container`` is required and has no default. The strings ``{db}``
+and ``{env}`` can be used inside it and are replaced respectively by the database
+name and the ``RUNNING_ENV`` environment variable. The container is **not**
+created automatically: provision it with the rest of the infrastructure.
+
+The container name is stored in the database for each attachment, and is used to
+access the right container in the storage.
+
+Read-only mode:
+
+The container and the file key are stored in the attachment. So if you change
+``azure_storage_container`` or ``ir_attachment.location``, the existing
+attachments will still be read from their former container. Files are deleted
+only when they live in the container configured for the current environment, so
+an instance restored from a production dump can read the production attachments
+without any risk of altering the production data.
 
 This addon must be added in the server wide addons with (``--load`` option):
 
 ``--load=web,attachment_azure``
+
+When migrating from another object storage, keep the addon of the former storage
+installed and server-wide loaded as well, so that attachments that still point to
+it remain readable.
 
 The System Parameter ``ir_attachment.storage.force.database`` can be customized to
 force storage of files in the database. See the documentation of the module
