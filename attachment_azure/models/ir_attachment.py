@@ -39,7 +39,22 @@ class IrAttachment(models.Model):
         return ["azure"] + super(IrAttachment, self)._get_stores()
 
     @api.model
-    def _get_azure_config(self):
+    def _format_container_name(self, storage_name, environment=None):
+        if not storage_name:
+            return ""
+        if environment is None:
+            environment = (
+                os.environ.get("RUNNING_ENV") or os.environ.get("ODOO_STAGE") or "dev"
+            )
+        storage_name = storage_name.format(
+            env=environment,
+            db=self.env.cr.dbname,
+        )
+        # Container names allow only lowercase letters, numbers and hyphens.
+        return re.sub(r"[\W_]+", "-", storage_name).lower()[:63]
+
+    @api.model
+    def _get_azure_config(self, container_name=None):
         """Return the Azure storage configuration of the current environment
 
         The configuration is read from a section of the Odoo configuration
@@ -55,17 +70,51 @@ class IrAttachment(models.Model):
         ``azure_storage_account_name``, ``azure_storage_account_url`` and
         ``azure_storage_account_key``, or with ``azure_storage_use_aad`` and
         ``azure_storage_account_url`` when a managed identity is available.
+
+        Restored non-production databases can read their production-container
+        URIs with the production account configuration. During the S3-to-Azure
+        transition, account credentials also fall back to that configuration,
+        while the current environment's legacy S3 bucket supplies the Azure
+        container used for new writes.
         """
         environment = os.environ.get("ODOO_STAGE")
-        return config.misc.get("%s_storage_azure" % environment, {})
+        azure = dict(config.misc.get("%s_storage_azure" % environment, {}))
+        if environment == "production":
+            return azure
+
+        production_azure = dict(config.misc.get("production_storage_azure", {}))
+        production_container = self._format_container_name(
+            production_azure.get("azure_storage_container"),
+            environment="production",
+        )
+        if container_name and container_name == production_container:
+            # A staging database restored from production keeps the full
+            # azure://production-container/key URI. Use the production account
+            # configuration for that read; deletion remains protected by the
+            # current-container guard in _store_file_delete.
+            return production_azure
+
+        if azure:
+            return azure
+
+        legacy = config.misc.get("%s_storage_s3" % environment, {})
+        legacy_container = legacy.get("aws_bucketname")
+        if production_azure and legacy_container:
+            # During an S3-to-Azure migration the account credentials are
+            # shared, while each non-production environment keeps writing to
+            # its existing environment-specific bucket/container name.
+            production_azure["azure_storage_container"] = legacy_container
+            return production_azure
+        return azure
 
     @api.model
-    def _get_blob_service_client(self):
+    def _get_blob_service_client(self, azure=None):
         """Connect to Azure and return the blob service client
 
         See ``_get_azure_config`` for the expected configuration.
         """
-        azure = self._get_azure_config()
+        if azure is None:
+            azure = self._get_azure_config()
         connect_str = azure.get("azure_storage_connection_string")
         account_name = azure.get("azure_storage_account_name")
         account_url = azure.get("azure_storage_account_url")
@@ -158,12 +207,7 @@ class IrAttachment(models.Model):
                 )
                 % ("%s_storage_azure" % os.environ.get("ODOO_STAGE"),)
             )
-        running_env = os.environ.get("RUNNING_ENV", "dev")
-        storage_name = storage_name.format(env=running_env, db=self.env.cr.dbname)
-        # replace invalid characters by -
-        storage_name = re.sub(r"[\W_]+", "-", storage_name)
-        # lowercase, max 63 chars
-        return str.lower(storage_name)[:63]
+        return self._format_container_name(storage_name)
 
     @api.model
     def _get_azure_container(self, container_name=None, check_exists=False):
@@ -182,7 +226,8 @@ class IrAttachment(models.Model):
         try:
             if not container_name:
                 container_name = self._get_container_name()
-            blob_service_client = self._get_blob_service_client()
+            azure = self._get_azure_config(container_name=container_name)
+            blob_service_client = self._get_blob_service_client(azure=azure)
         except exceptions.UserError:
             _logger.exception(
                 "error accessing to storage '%s' please check credentials ",

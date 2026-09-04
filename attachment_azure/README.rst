@@ -35,8 +35,16 @@ or, when a managed identity is available (not the case on Odoo.sh):
 
 ``azure_storage_container`` is required and has no default. The strings ``{db}``
 and ``{env}`` can be used inside it and are replaced respectively by the database
-name and the ``RUNNING_ENV`` environment variable. The container is **not**
-created automatically: provision it with the rest of the infrastructure.
+name and the ``RUNNING_ENV`` environment variable (or ``ODOO_STAGE`` when
+``RUNNING_ENV`` is absent). The container is **not** created automatically:
+provision it with the rest of the infrastructure.
+
+During a migration from ``attachment_s3``, a non-production environment may
+reuse the account-level credentials from ``[production_storage_azure]`` when it
+does not yet have an Azure section. Its Azure container is then taken from the
+``aws_bucketname`` in its existing ``[<ODOO_STAGE>_storage_s3]`` section. This
+keeps writes in the environment-specific container while allowing a restored
+database to read its existing production Azure attachments.
 
 The container name is stored in the database for each attachment, and is used to
 access the right container in the storage.
